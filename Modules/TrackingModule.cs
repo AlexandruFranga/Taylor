@@ -1,6 +1,7 @@
 using Discord.Interactions;
 using WorkTimeBot.Models;
 using WorkTimeBot.Services;
+using Discord;
 
 namespace WorkTimeBot.Modules;
 
@@ -78,4 +79,21 @@ public class TrackingModule : InteractionModuleBase<SocketInteractionContext>
 
         await RespondAsync(embed: embed);
     }
+
+   [SlashCommand("total", "See your total work time.")]
+public async Task TotalAsync(
+    [Summary("user", "Whose total to check (defaults to you).")] IUser? user = null)
+{
+    var target = user ?? Context.User;
+    var record = _store.GetRecord(target.Id);
+
+    if (record is null)
+    {
+        await RespondAsync($"⏱️ No record found for **{target.Username}**.", ephemeral: true);
+        return;
+    }
+
+    var total = TotalTime.Calculate(record);
+    await RespondAsync($"⏱️ Total work time for **{target.Username}**: **{TimeFormat.Humanize(total)}**.", ephemeral: true);
+}
 }

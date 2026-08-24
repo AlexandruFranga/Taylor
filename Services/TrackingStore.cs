@@ -177,4 +177,15 @@ public class TrackingStore
             .Where(s => s.Start.UtcDateTime.Date == utcDate)
             .Aggregate(TimeSpan.Zero, (sum, s) => sum + s.Duration);
     }
+
+
+    public UserRecord? GetRecord(ulong userId)
+    {
+        lock (_lock)
+        {
+            _data.Users.TryGetValue(userId.ToString(), out var record);
+            
+            return record;
+        }
+    }
 }
