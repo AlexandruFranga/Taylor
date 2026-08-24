@@ -1,0 +1,7 @@
+{
+  "Token": "YOUR_BOT_TOKEN_HERE",
+  "GuildId": null,
+  "WeeklyChannelId": null,
+  "TimeZoneId": "Europe/Bucharest",
+  "WeeklyPostHourLocal": 9
+}

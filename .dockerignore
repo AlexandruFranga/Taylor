@@ -1,0 +1,6 @@
+bin/
+obj/
+config.json
+data/
+.env
+.git/

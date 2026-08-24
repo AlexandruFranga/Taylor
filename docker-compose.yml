@@ -1,0 +1,9 @@
+services:
+  worktimebot:
+    build: .
+    container_name: worktimebot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ${DATA_HOST_PATH}:/app/data
