@@ -17,24 +17,27 @@ public class WorkTimeDbContext : DbContext
     {
         modelBuilder.Entity<UserRecord>(entity =>
         {
-            entity.HasKey(u => u.UserId);
-            entity.Property(u => u.UserId).HasConversion<long>().ValueGeneratedNever();
+            entity.HasKey(u => new { u.GuildId, u.UserId });
+            entity.Property(u => u.GuildId).HasConversion<long>();
+            entity.Property(u => u.UserId).HasConversion<long>();
 
             entity.HasMany(u => u.Sessions)
                 .WithOne()
-                .HasForeignKey(s => s.UserId)
+                .HasForeignKey(s => new { s.GuildId, s.UserId })
                 .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<Session>(entity =>
         {
             entity.HasKey(s => s.Id);
+            entity.Property(s => s.GuildId).HasConversion<long>();
             entity.Property(s => s.UserId).HasConversion<long>();
         });
 
         modelBuilder.Entity<BotSetting>(entity =>
         {
-            entity.HasKey(s => s.Key);
+            entity.HasKey(s => new { s.GuildId, s.Key });
+            entity.Property(s => s.GuildId).HasConversion<long>();
         });
     }
 }

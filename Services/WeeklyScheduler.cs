@@ -29,7 +29,7 @@ public class WeeklyScheduler : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            if (await _store.GetWeeklyChannelIdAsync() is null)
+            if ((await _store.GetWeeklyChannelsAsync()).Count == 0)
             {
                 try
                 {
@@ -57,11 +57,11 @@ public class WeeklyScheduler : BackgroundService
 
             try
             {
-                await PostWeeklyReportAsync(weeksAgo: 1);
+                await PostWeeklyReportsAsync(weeksAgo: 1);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[WeeklyScheduler] Failed to post weekly report: {ex.Message}");
+                Console.WriteLine($"[WeeklyScheduler] Failed to post weekly reports: {ex.Message}");
             }
         }
     }
@@ -84,23 +84,22 @@ public class WeeklyScheduler : BackgroundService
         return delay > TimeSpan.Zero ? delay : TimeSpan.FromSeconds(5);
     }
 
-    public async Task PostWeeklyReportAsync(int weeksAgo)
+    public async Task PostWeeklyReportsAsync(int weeksAgo)
     {
-        if (await _store.GetWeeklyChannelIdAsync() is not ulong channelId)
-        {
-            return;
-        }
-
-        if (_client.GetChannel(channelId) is not IMessageChannel channel)
-        {
-            Console.WriteLine($"[WeeklyScheduler] Configured weekly channel {channelId} was not found, or isn't a text channel the bot can see.");
-            return;
-        }
-
         var (start, end) = WeekHelper.GetWeekRangeUtc(DateTimeOffset.UtcNow, _tz, weeksAgo);
-        var totals = await _store.GetTotalsForRangeAsync(start, end);
-        var embed = ReportBuilder.BuildWeeklyEmbed(totals, start, end, _tz, live: weeksAgo == 0, topN: 3);
 
-        await channel.SendMessageAsync(embed: embed);
+        foreach (var (guildId, channelId) in await _store.GetWeeklyChannelsAsync())
+        {
+            if (_client.GetChannel(channelId) is not IMessageChannel channel)
+            {
+                Console.WriteLine($"[WeeklyScheduler] Configured weekly channel {channelId} for guild {guildId} was not found, or isn't a text channel the bot can see.");
+                continue;
+            }
+
+            var totals = await _store.GetTotalsForRangeAsync(guildId, start, end);
+            var embed = ReportBuilder.BuildWeeklyEmbed(totals, start, end, _tz, live: weeksAgo == 0, topN: 3);
+
+            await channel.SendMessageAsync(embed: embed);
+        }
     }
 }

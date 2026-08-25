@@ -14,22 +14,43 @@ public class TrackingStore
         _contextFactory = contextFactory;
     }
 
-    public async Task<ulong?> GetWeeklyChannelIdAsync()
+    public async Task<ulong?> GetWeeklyChannelIdAsync(ulong guildId)
     {
         await using var db = await _contextFactory.CreateDbContextAsync();
-        var setting = await db.Settings.FindAsync(WeeklyChannelKey);
+        var setting = await db.Settings.FindAsync(guildId, WeeklyChannelKey);
 
         return setting?.Value is string value && ulong.TryParse(value, out var channelId) ? channelId : null;
     }
 
-    public async Task SetWeeklyChannelIdAsync(ulong channelId)
+    public async Task<List<(ulong guildId, ulong channelId)>> GetWeeklyChannelsAsync()
     {
         await using var db = await _contextFactory.CreateDbContextAsync();
-        var setting = await db.Settings.FindAsync(WeeklyChannelKey);
+        var settings = await db.Settings
+            .AsNoTracking()
+            .Where(s => s.Key == WeeklyChannelKey)
+            .Select(s => new { s.GuildId, s.Value })
+            .ToListAsync();
+
+        var channels = new List<(ulong, ulong)>();
+        foreach (var setting in settings)
+        {
+            if (ulong.TryParse(setting.Value, out var channelId))
+            {
+                channels.Add((setting.GuildId, channelId));
+            }
+        }
+
+        return channels;
+    }
+
+    public async Task SetWeeklyChannelIdAsync(ulong guildId, ulong channelId)
+    {
+        await using var db = await _contextFactory.CreateDbContextAsync();
+        var setting = await db.Settings.FindAsync(guildId, WeeklyChannelKey);
 
         if (setting is null)
         {
-            db.Settings.Add(new BotSetting { Key = WeeklyChannelKey, Value = channelId.ToString() });
+            db.Settings.Add(new BotSetting { GuildId = guildId, Key = WeeklyChannelKey, Value = channelId.ToString() });
         }
         else
         {
@@ -39,12 +60,12 @@ public class TrackingStore
         await db.SaveChangesAsync();
     }
 
-    private static async Task<UserRecord> GetOrCreateAsync(WorkTimeDbContext db, ulong userId, string displayName)
+    private static async Task<UserRecord> GetOrCreateAsync(WorkTimeDbContext db, ulong guildId, ulong userId, string displayName)
     {
-        var record = await db.Users.FindAsync(userId);
+        var record = await db.Users.FindAsync(guildId, userId);
         if (record is null)
         {
-            record = new UserRecord { UserId = userId, DisplayName = displayName };
+            record = new UserRecord { GuildId = guildId, UserId = userId, DisplayName = displayName };
             db.Users.Add(record);
         }
         else
@@ -55,10 +76,10 @@ public class TrackingStore
         return record;
     }
 
-    public async Task<(bool ok, string message)> StartAsync(ulong userId, string displayName, string? note)
+    public async Task<(bool ok, string message)> StartAsync(ulong guildId, ulong userId, string displayName, string? note)
     {
         await using var db = await _contextFactory.CreateDbContextAsync();
-        var record = await GetOrCreateAsync(db, userId, displayName);
+        var record = await GetOrCreateAsync(db, guildId, userId, displayName);
 
         if (record.CurrentStart.HasValue)
         {
@@ -72,10 +93,10 @@ public class TrackingStore
         return (true, "Timer started.");
     }
 
-    public async Task<(bool ok, string message, TimeSpan duration, TimeSpan totalToday, string? note)> FinishAsync(ulong userId, string displayName)
+    public async Task<(bool ok, string message, TimeSpan duration, TimeSpan totalToday, string? note)> FinishAsync(ulong guildId, ulong userId, string displayName)
     {
         await using var db = await _contextFactory.CreateDbContextAsync();
-        var record = await GetOrCreateAsync(db, userId, displayName);
+        var record = await GetOrCreateAsync(db, guildId, userId, displayName);
 
         if (!record.CurrentStart.HasValue)
         {
@@ -86,21 +107,21 @@ public class TrackingStore
         var end = DateTimeOffset.UtcNow;
         var note = record.CurrentNote;
 
-        db.Sessions.Add(new Session { UserId = userId, Start = start, End = end, Note = note });
+        db.Sessions.Add(new Session { GuildId = guildId, UserId = userId, Start = start, End = end, Note = note });
         record.CurrentStart = null;
         record.CurrentNote = null;
         await db.SaveChangesAsync();
 
         var duration = end - start;
-        var totalToday = await SumSessionsOnUtcDateAsync(db, userId, DateTime.UtcNow.Date);
+        var totalToday = await SumSessionsOnUtcDateAsync(db, guildId, userId, DateTime.UtcNow.Date);
 
         return (true, "Timer stopped.", duration, totalToday, note);
     }
 
-    public async Task<(bool running, DateTimeOffset? start, TimeSpan elapsed, TimeSpan totalToday, string? note)> GetStatusAsync(ulong userId)
+    public async Task<(bool running, DateTimeOffset? start, TimeSpan elapsed, TimeSpan totalToday, string? note)> GetStatusAsync(ulong guildId, ulong userId)
     {
         await using var db = await _contextFactory.CreateDbContextAsync();
-        var record = await db.Users.AsNoTracking().SingleOrDefaultAsync(u => u.UserId == userId);
+        var record = await db.Users.AsNoTracking().SingleOrDefaultAsync(u => u.GuildId == guildId && u.UserId == userId);
 
         if (record is null)
         {
@@ -110,7 +131,7 @@ public class TrackingStore
         var now = DateTimeOffset.UtcNow;
         var elapsed = record.CurrentStart.HasValue ? now - record.CurrentStart.Value : TimeSpan.Zero;
 
-        var totalToday = await SumSessionsOnUtcDateAsync(db, userId, DateTime.UtcNow.Date);
+        var totalToday = await SumSessionsOnUtcDateAsync(db, guildId, userId, DateTime.UtcNow.Date);
         if (record.CurrentStart.HasValue && record.CurrentStart.Value.UtcDateTime.Date == DateTime.UtcNow.Date)
         {
             totalToday += elapsed;
@@ -119,21 +140,22 @@ public class TrackingStore
         return (record.CurrentStart.HasValue, record.CurrentStart, elapsed, totalToday, record.CurrentNote);
     }
 
-    public async Task<List<(ulong userId, string displayName, TimeSpan total)>> GetTotalsForRangeAsync(DateTimeOffset rangeStartUtc, DateTimeOffset rangeEndUtc)
+    public async Task<List<(ulong userId, string displayName, TimeSpan total)>> GetTotalsForRangeAsync(ulong guildId, DateTimeOffset rangeStartUtc, DateTimeOffset rangeEndUtc)
     {
         await using var db = await _contextFactory.CreateDbContextAsync();
 
         var sessionTotals = await db.Sessions
-            .Where(s => s.Start >= rangeStartUtc && s.Start < rangeEndUtc)
+            .Where(s => s.GuildId == guildId && s.Start >= rangeStartUtc && s.Start < rangeEndUtc)
             .Select(s => new { s.UserId, s.Start, s.End })
             .ToListAsync();
 
         var runningRecords = await db.Users
-            .Where(u => u.CurrentStart != null && u.CurrentStart >= rangeStartUtc && u.CurrentStart < rangeEndUtc)
+            .Where(u => u.GuildId == guildId && u.CurrentStart != null && u.CurrentStart >= rangeStartUtc && u.CurrentStart < rangeEndUtc)
             .Select(u => new { u.UserId, u.CurrentStart })
             .ToListAsync();
 
         var displayNames = await db.Users
+            .Where(u => u.GuildId == guildId)
             .Select(u => new { u.UserId, u.DisplayName })
             .ToDictionaryAsync(u => u.UserId, u => u.DisplayName);
 
@@ -157,22 +179,22 @@ public class TrackingStore
             .ToList();
     }
 
-    private static async Task<TimeSpan> SumSessionsOnUtcDateAsync(WorkTimeDbContext db, ulong userId, DateTime utcDate)
+    private static async Task<TimeSpan> SumSessionsOnUtcDateAsync(WorkTimeDbContext db, ulong guildId, ulong userId, DateTime utcDate)
     {
         var dayStart = new DateTimeOffset(utcDate, TimeSpan.Zero);
         var dayEnd = dayStart.AddDays(1);
 
         var sessions = await db.Sessions
-            .Where(s => s.UserId == userId && s.Start >= dayStart && s.Start < dayEnd)
+            .Where(s => s.GuildId == guildId && s.UserId == userId && s.Start >= dayStart && s.Start < dayEnd)
             .Select(s => new { s.Start, s.End })
             .ToListAsync();
 
         return sessions.Aggregate(TimeSpan.Zero, (sum, s) => sum + (s.End - s.Start));
     }
 
-    public async Task<UserRecord?> GetRecordAsync(ulong userId)
+    public async Task<UserRecord?> GetRecordAsync(ulong guildId, ulong userId)
     {
         await using var db = await _contextFactory.CreateDbContextAsync();
-        return await db.Users.AsNoTracking().Include(u => u.Sessions).SingleOrDefaultAsync(u => u.UserId == userId);
+        return await db.Users.AsNoTracking().Include(u => u.Sessions).SingleOrDefaultAsync(u => u.GuildId == guildId && u.UserId == userId);
     }
 }

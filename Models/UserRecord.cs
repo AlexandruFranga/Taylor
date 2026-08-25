@@ -2,6 +2,7 @@ namespace WorkTimeBot.Models;
 
 public class UserRecord
 {
+    public ulong GuildId { get; set; }
     public ulong UserId { get; set; }
     public string DisplayName { get; set; } = "Unknown";
 

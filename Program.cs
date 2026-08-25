@@ -98,9 +98,11 @@ using (var scope = host.Services.CreateScope())
 }
 
 var store = host.Services.GetRequiredService<TrackingStore>();
-if (await store.GetWeeklyChannelIdAsync() is null && config.WeeklyChannelId is ulong seedChannelId)
+if (config.GuildId is ulong seedGuildId
+    && config.WeeklyChannelId is ulong seedChannelId
+    && await store.GetWeeklyChannelIdAsync(seedGuildId) is null)
 {
-    await store.SetWeeklyChannelIdAsync(seedChannelId);
+    await store.SetWeeklyChannelIdAsync(seedGuildId, seedChannelId);
 }
 
 await host.RunAsync();
