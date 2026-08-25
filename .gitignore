@@ -1,5 +1,4 @@
 bin/
 obj/
 config.json
-data/
 .env

@@ -1,5 +1,6 @@
 using Discord;
 using Discord.WebSocket;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using WorkTimeBot.Models;
@@ -59,20 +60,22 @@ catch (Exception ex)
     return;
 }
 
-var dataDir = Path.Combine(baseDir, "data");
-Directory.CreateDirectory(dataDir);
-var dataPath = Path.Combine(dataDir, "data.json");
-
-var store = new TrackingStore(dataPath);
-if (store.GetWeeklyChannelId() is null && config.WeeklyChannelId is ulong seedChannelId)
+string connectionString;
+try
 {
-    store.SetWeeklyChannelId(seedChannelId);
+    connectionString = PostgresConnectionString.Resolve(config);
+}
+catch (Exception ex)
+{
+    Console.WriteLine(ex.Message);
+    return;
 }
 
 var builder = Host.CreateApplicationBuilder(args);
 
 builder.Services.AddSingleton(config);
-builder.Services.AddSingleton(store);
+builder.Services.AddPooledDbContextFactory<WorkTimeDbContext>(options => options.UseNpgsql(connectionString));
+builder.Services.AddSingleton<TrackingStore>();
 
 builder.Services.AddSingleton(new DiscordSocketClient(new DiscordSocketConfig
 {
@@ -86,4 +89,18 @@ builder.Services.AddHostedService<BotHostedService>();
 builder.Services.AddHostedService<WeeklyScheduler>();
 
 var host = builder.Build();
+
+using (var scope = host.Services.CreateScope())
+{
+    var contextFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<WorkTimeDbContext>>();
+    await using var db = await contextFactory.CreateDbContextAsync();
+    await db.Database.MigrateAsync();
+}
+
+var store = host.Services.GetRequiredService<TrackingStore>();
+if (await store.GetWeeklyChannelIdAsync() is null && config.WeeklyChannelId is ulong seedChannelId)
+{
+    await store.SetWeeklyChannelIdAsync(seedChannelId);
+}
+
 await host.RunAsync();

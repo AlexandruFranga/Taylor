@@ -12,4 +12,6 @@ public class BotConfig
     public string TimeZoneId { get; set; } = "Europe/Bucharest";
 
     public int WeeklyPostHourLocal { get; set; } = 9;
+
+    public string? ConnectionString { get; set; }
 }

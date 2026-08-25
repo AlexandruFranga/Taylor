@@ -20,7 +20,7 @@ public class TrackingModule : InteractionModuleBase<SocketInteractionContext>
     public async Task StartAsync(
         [Summary("note", "What are you about to work on?")] string? note = null)
     {
-        var (ok, message) = _store.Start(Context.User.Id, Context.User.Username, note);
+        var (ok, message) = await _store.StartAsync(Context.User.Id, Context.User.Username, note);
 
         if (!ok)
         {
@@ -36,7 +36,7 @@ public class TrackingModule : InteractionModuleBase<SocketInteractionContext>
     [SlashCommand("finish", "Stop tracking your work time.")]
     public async Task FinishAsync()
     {
-        var (ok, message, duration, totalToday, note) = _store.Finish(Context.User.Id, Context.User.Username);
+        var (ok, message, duration, totalToday, note) = await _store.FinishAsync(Context.User.Id, Context.User.Username);
 
         if (!ok)
         {
@@ -53,7 +53,7 @@ public class TrackingModule : InteractionModuleBase<SocketInteractionContext>
     [SlashCommand("status", "Check your current timer.")]
     public async Task StatusAsync()
     {
-        var (running, start, elapsed, totalToday, note) = _store.GetStatus(Context.User.Id);
+        var (running, start, elapsed, totalToday, note) = await _store.GetStatusAsync(Context.User.Id);
 
         if (!running)
         {
@@ -74,7 +74,7 @@ public class TrackingModule : InteractionModuleBase<SocketInteractionContext>
     public async Task WeeklyAsync()
     {
         var (start, end) = WeekHelper.GetWeekRangeUtc(DateTimeOffset.UtcNow, _tz, weeksAgo: 0);
-        var totals = _store.GetTotalsForRange(start, end);
+        var totals = await _store.GetTotalsForRangeAsync(start, end);
         var embed = ReportBuilder.BuildWeeklyEmbed(totals, start, end, _tz, live: true);
 
         await RespondAsync(embed: embed);
@@ -85,7 +85,7 @@ public async Task TotalAsync(
     [Summary("user", "Whose total to check (defaults to you).")] IUser? user = null)
 {
     var target = user ?? Context.User;
-    var record = _store.GetRecord(target.Id);
+    var record = await _store.GetRecordAsync(target.Id);
 
     if (record is null)
     {

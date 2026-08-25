@@ -29,7 +29,7 @@ public class WeeklyScheduler : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            if (_store.GetWeeklyChannelId() is null)
+            if (await _store.GetWeeklyChannelIdAsync() is null)
             {
                 try
                 {
@@ -86,7 +86,7 @@ public class WeeklyScheduler : BackgroundService
 
     public async Task PostWeeklyReportAsync(int weeksAgo)
     {
-        if (_store.GetWeeklyChannelId() is not ulong channelId)
+        if (await _store.GetWeeklyChannelIdAsync() is not ulong channelId)
         {
             return;
         }
@@ -98,7 +98,7 @@ public class WeeklyScheduler : BackgroundService
         }
 
         var (start, end) = WeekHelper.GetWeekRangeUtc(DateTimeOffset.UtcNow, _tz, weeksAgo);
-        var totals = _store.GetTotalsForRange(start, end);
+        var totals = await _store.GetTotalsForRangeAsync(start, end);
         var embed = ReportBuilder.BuildWeeklyEmbed(totals, start, end, _tz, live: weeksAgo == 0, topN: 3);
 
         await channel.SendMessageAsync(embed: embed);

@@ -19,7 +19,7 @@ public class SettingsModule : InteractionModuleBase<SocketInteractionContext>
     public async Task SetWeeklyChannelAsync(
         [Summary("channel", "Channel to post the weekly leaderboard in")] ITextChannel channel)
     {
-        _store.SetWeeklyChannelId(channel.Id);
+        await _store.SetWeeklyChannelIdAsync(channel.Id);
         await RespondAsync($"✅ Weekly top 3 leaderboard will now post in {channel.Mention} every week.", ephemeral: true);
     }
 }

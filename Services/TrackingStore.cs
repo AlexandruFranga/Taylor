@@ -1,73 +1,51 @@
-using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 using WorkTimeBot.Models;
 
 namespace WorkTimeBot.Services;
 
 public class TrackingStore
 {
-    private readonly string _filePath;
-    private readonly object _lock = new();
-    private TrackingData _data;
+    private const string WeeklyChannelKey = "WeeklyChannelId";
 
-    public TrackingStore(string filePath)
+    private readonly IDbContextFactory<WorkTimeDbContext> _contextFactory;
+
+    public TrackingStore(IDbContextFactory<WorkTimeDbContext> contextFactory)
     {
-        _filePath = filePath;
-        _data = Load();
+        _contextFactory = contextFactory;
     }
 
-    private TrackingData Load()
+    public async Task<ulong?> GetWeeklyChannelIdAsync()
     {
-        if (!File.Exists(_filePath))
-        {
-            return new TrackingData();
-        }
+        await using var db = await _contextFactory.CreateDbContextAsync();
+        var setting = await db.Settings.FindAsync(WeeklyChannelKey);
 
-        try
-        {
-            var json = File.ReadAllText(_filePath);
-            return JsonSerializer.Deserialize<TrackingData>(json) ?? new TrackingData();
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[TrackingStore] Failed to read {_filePath}: {ex.Message}. Starting with empty data.");
-            return new TrackingData();
-        }
+        return setting?.Value is string value && ulong.TryParse(value, out var channelId) ? channelId : null;
     }
 
-    private void Save()
+    public async Task SetWeeklyChannelIdAsync(ulong channelId)
     {
-        var options = new JsonSerializerOptions { WriteIndented = true };
-        var json = JsonSerializer.Serialize(_data, options);
+        await using var db = await _contextFactory.CreateDbContextAsync();
+        var setting = await db.Settings.FindAsync(WeeklyChannelKey);
 
-        var tmpPath = _filePath + ".tmp";
-        File.WriteAllText(tmpPath, json);
-        File.Move(tmpPath, _filePath, overwrite: true);
-    }
-
-    public ulong? GetWeeklyChannelId()
-    {
-        lock (_lock)
+        if (setting is null)
         {
-            return _data.WeeklyChannelId;
+            db.Settings.Add(new BotSetting { Key = WeeklyChannelKey, Value = channelId.ToString() });
         }
-    }
-
-    public void SetWeeklyChannelId(ulong channelId)
-    {
-        lock (_lock)
+        else
         {
-            _data.WeeklyChannelId = channelId;
-            Save();
+            setting.Value = channelId.ToString();
         }
+
+        await db.SaveChangesAsync();
     }
 
-    private UserRecord GetOrCreate(ulong userId, string displayName)
+    private static async Task<UserRecord> GetOrCreateAsync(WorkTimeDbContext db, ulong userId, string displayName)
     {
-        var key = userId.ToString();
-        if (!_data.Users.TryGetValue(key, out var record))
+        var record = await db.Users.FindAsync(userId);
+        if (record is null)
         {
             record = new UserRecord { UserId = userId, DisplayName = displayName };
-            _data.Users[key] = record;
+            db.Users.Add(record);
         }
         else
         {
@@ -77,115 +55,124 @@ public class TrackingStore
         return record;
     }
 
-    public (bool ok, string message) Start(ulong userId, string displayName, string? note)
+    public async Task<(bool ok, string message)> StartAsync(ulong userId, string displayName, string? note)
     {
-        lock (_lock)
-        {
-            var record = GetOrCreate(userId, displayName);
-            if (record.CurrentStart.HasValue)
-            {
-                return (false, $"You already have a timer running (started <t:{record.CurrentStart.Value.ToUnixTimeSeconds()}:R>).");
-            }
+        await using var db = await _contextFactory.CreateDbContextAsync();
+        var record = await GetOrCreateAsync(db, userId, displayName);
 
-            record.CurrentStart = DateTimeOffset.UtcNow;
-            record.CurrentNote = string.IsNullOrWhiteSpace(note) ? null : note.Trim();
-            Save();
-            return (true, "Timer started.");
+        if (record.CurrentStart.HasValue)
+        {
+            return (false, $"You already have a timer running (started <t:{record.CurrentStart.Value.ToUnixTimeSeconds()}:R>).");
         }
+
+        record.CurrentStart = DateTimeOffset.UtcNow;
+        record.CurrentNote = string.IsNullOrWhiteSpace(note) ? null : note.Trim();
+        await db.SaveChangesAsync();
+
+        return (true, "Timer started.");
     }
 
-    public (bool ok, string message, TimeSpan duration, TimeSpan totalToday, string? note) Finish(ulong userId, string displayName)
+    public async Task<(bool ok, string message, TimeSpan duration, TimeSpan totalToday, string? note)> FinishAsync(ulong userId, string displayName)
     {
-        lock (_lock)
+        await using var db = await _contextFactory.CreateDbContextAsync();
+        var record = await GetOrCreateAsync(db, userId, displayName);
+
+        if (!record.CurrentStart.HasValue)
         {
-            var record = GetOrCreate(userId, displayName);
-            if (!record.CurrentStart.HasValue)
-            {
-                return (false, "You don't have a timer running. Use /start first.", TimeSpan.Zero, TimeSpan.Zero, null);
-            }
-
-            var start = record.CurrentStart.Value;
-            var end = DateTimeOffset.UtcNow;
-            var note = record.CurrentNote;
-            record.Sessions.Add(new Session { Start = start, End = end, Note = note });
-            record.CurrentStart = null;
-            record.CurrentNote = null;
-            Save();
-
-            var duration = end - start;
-            var totalToday = SumSessionsOnUtcDate(record, DateTime.UtcNow.Date);
-
-            return (true, "Timer stopped.", duration, totalToday, note);
+            return (false, "You don't have a timer running. Use /start first.", TimeSpan.Zero, TimeSpan.Zero, null);
         }
+
+        var start = record.CurrentStart.Value;
+        var end = DateTimeOffset.UtcNow;
+        var note = record.CurrentNote;
+
+        db.Sessions.Add(new Session { UserId = userId, Start = start, End = end, Note = note });
+        record.CurrentStart = null;
+        record.CurrentNote = null;
+        await db.SaveChangesAsync();
+
+        var duration = end - start;
+        var totalToday = await SumSessionsOnUtcDateAsync(db, userId, DateTime.UtcNow.Date);
+
+        return (true, "Timer stopped.", duration, totalToday, note);
     }
 
-    public (bool running, DateTimeOffset? start, TimeSpan elapsed, TimeSpan totalToday, string? note) GetStatus(ulong userId)
+    public async Task<(bool running, DateTimeOffset? start, TimeSpan elapsed, TimeSpan totalToday, string? note)> GetStatusAsync(ulong userId)
     {
-        lock (_lock)
+        await using var db = await _contextFactory.CreateDbContextAsync();
+        var record = await db.Users.AsNoTracking().SingleOrDefaultAsync(u => u.UserId == userId);
+
+        if (record is null)
         {
-            var key = userId.ToString();
-            if (!_data.Users.TryGetValue(key, out var record))
-            {
-                return (false, null, TimeSpan.Zero, TimeSpan.Zero, null);
-            }
-
-            var now = DateTimeOffset.UtcNow;
-            var elapsed = record.CurrentStart.HasValue ? now - record.CurrentStart.Value : TimeSpan.Zero;
-
-            var totalToday = SumSessionsOnUtcDate(record, DateTime.UtcNow.Date);
-            if (record.CurrentStart.HasValue && record.CurrentStart.Value.UtcDateTime.Date == DateTime.UtcNow.Date)
-            {
-                totalToday += elapsed;
-            }
-
-            return (record.CurrentStart.HasValue, record.CurrentStart, elapsed, totalToday, record.CurrentNote);
+            return (false, null, TimeSpan.Zero, TimeSpan.Zero, null);
         }
+
+        var now = DateTimeOffset.UtcNow;
+        var elapsed = record.CurrentStart.HasValue ? now - record.CurrentStart.Value : TimeSpan.Zero;
+
+        var totalToday = await SumSessionsOnUtcDateAsync(db, userId, DateTime.UtcNow.Date);
+        if (record.CurrentStart.HasValue && record.CurrentStart.Value.UtcDateTime.Date == DateTime.UtcNow.Date)
+        {
+            totalToday += elapsed;
+        }
+
+        return (record.CurrentStart.HasValue, record.CurrentStart, elapsed, totalToday, record.CurrentNote);
     }
 
-    public List<(ulong userId, string displayName, TimeSpan total)> GetTotalsForRange(DateTimeOffset rangeStartUtc, DateTimeOffset rangeEndUtc)
+    public async Task<List<(ulong userId, string displayName, TimeSpan total)>> GetTotalsForRangeAsync(DateTimeOffset rangeStartUtc, DateTimeOffset rangeEndUtc)
     {
-        lock (_lock)
+        await using var db = await _contextFactory.CreateDbContextAsync();
+
+        var sessionTotals = await db.Sessions
+            .Where(s => s.Start >= rangeStartUtc && s.Start < rangeEndUtc)
+            .Select(s => new { s.UserId, s.Start, s.End })
+            .ToListAsync();
+
+        var runningRecords = await db.Users
+            .Where(u => u.CurrentStart != null && u.CurrentStart >= rangeStartUtc && u.CurrentStart < rangeEndUtc)
+            .Select(u => new { u.UserId, u.CurrentStart })
+            .ToListAsync();
+
+        var displayNames = await db.Users
+            .Select(u => new { u.UserId, u.DisplayName })
+            .ToDictionaryAsync(u => u.UserId, u => u.DisplayName);
+
+        var totals = new Dictionary<ulong, TimeSpan>();
+
+        foreach (var s in sessionTotals)
         {
-            var results = new List<(ulong, string, TimeSpan)>();
-
-            foreach (var record in _data.Users.Values)
-            {
-                var total = record.Sessions
-                    .Where(s => s.Start >= rangeStartUtc && s.Start < rangeEndUtc)
-                    .Aggregate(TimeSpan.Zero, (sum, s) => sum + s.Duration);
-
-                if (record.CurrentStart.HasValue
-                    && record.CurrentStart.Value >= rangeStartUtc
-                    && record.CurrentStart.Value < rangeEndUtc)
-                {
-                    total += DateTimeOffset.UtcNow - record.CurrentStart.Value;
-                }
-
-                if (total > TimeSpan.Zero)
-                {
-                    results.Add((record.UserId, record.DisplayName, total));
-                }
-            }
-
-            return results.OrderByDescending(r => r.Item3).ToList();
+            totals[s.UserId] = totals.GetValueOrDefault(s.UserId) + (s.End - s.Start);
         }
+
+        var now = DateTimeOffset.UtcNow;
+        foreach (var r in runningRecords)
+        {
+            totals[r.UserId] = totals.GetValueOrDefault(r.UserId) + (now - r.CurrentStart!.Value);
+        }
+
+        return totals
+            .Where(kv => kv.Value > TimeSpan.Zero)
+            .Select(kv => (kv.Key, displayNames.GetValueOrDefault(kv.Key, "Unknown"), kv.Value))
+            .OrderByDescending(t => t.Value)
+            .ToList();
     }
 
-    private static TimeSpan SumSessionsOnUtcDate(UserRecord record, DateTime utcDate)
+    private static async Task<TimeSpan> SumSessionsOnUtcDateAsync(WorkTimeDbContext db, ulong userId, DateTime utcDate)
     {
-        return record.Sessions
-            .Where(s => s.Start.UtcDateTime.Date == utcDate)
-            .Aggregate(TimeSpan.Zero, (sum, s) => sum + s.Duration);
+        var dayStart = new DateTimeOffset(utcDate, TimeSpan.Zero);
+        var dayEnd = dayStart.AddDays(1);
+
+        var sessions = await db.Sessions
+            .Where(s => s.UserId == userId && s.Start >= dayStart && s.Start < dayEnd)
+            .Select(s => new { s.Start, s.End })
+            .ToListAsync();
+
+        return sessions.Aggregate(TimeSpan.Zero, (sum, s) => sum + (s.End - s.Start));
     }
 
-
-    public UserRecord? GetRecord(ulong userId)
+    public async Task<UserRecord?> GetRecordAsync(ulong userId)
     {
-        lock (_lock)
-        {
-            _data.Users.TryGetValue(userId.ToString(), out var record);
-            
-            return record;
-        }
+        await using var db = await _contextFactory.CreateDbContextAsync();
+        return await db.Users.AsNoTracking().Include(u => u.Sessions).SingleOrDefaultAsync(u => u.UserId == userId);
     }
 }
